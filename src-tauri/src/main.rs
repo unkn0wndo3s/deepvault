@@ -108,7 +108,9 @@ fn scan_directory(
             content,
         };
 
-        session.files.insert(virtual_file_path, encrypted_file);
+        session
+            .files
+            .insert(virtual_file_path.clone(), encrypted_file);
 
         // Si c'est un répertoire, le scanner récursivement
         if is_directory {
@@ -1137,38 +1139,40 @@ async fn delete_encrypted_file(
         format!("{}{}", mount_path, file_path)
     };
 
-    // Vérifier si le fichier existe dans le cache
-    if let Some(file) = session.files.get(&file_path) {
-        // Supprimer le fichier/répertoire de la partition
-        if file.is_directory {
-            std::fs::remove_dir_all(&physical_path)
-                .map_err(|e| format!("Erreur lors de la suppression du répertoire: {}", e))?;
-        } else {
-            std::fs::remove_file(&physical_path)
-                .map_err(|e| format!("Erreur lors de la suppression du fichier: {}", e))?;
-        }
-
-        // Supprimer du cache
-        session.files.remove(&file_path);
-
-        // Si c'est un répertoire, supprimer aussi tous les fichiers qu'il contient du cache
-        if file.is_directory {
-            let prefix = if file_path == "/" {
-                "/".to_string()
-            } else {
-                format!("{}/", file_path)
-            };
-
-            session
-                .files
-                .retain(|path, _| !path.starts_with(&prefix) || path == &file_path);
-        }
-
-        println!("✅ Fichier supprimé avec succès");
-        Ok(())
+    // Vérifier si le fichier existe dans le cache et récupérer ses propriétés
+    let is_directory = if let Some(file) = session.files.get(&file_path) {
+        file.is_directory
     } else {
-        Err("Fichier non trouvé".to_string())
+        return Err("Fichier non trouvé".to_string());
+    };
+
+    // Supprimer le fichier/répertoire de la partition
+    if is_directory {
+        std::fs::remove_dir_all(&physical_path)
+            .map_err(|e| format!("Erreur lors de la suppression du répertoire: {}", e))?;
+    } else {
+        std::fs::remove_file(&physical_path)
+            .map_err(|e| format!("Erreur lors de la suppression du fichier: {}", e))?;
     }
+
+    // Supprimer du cache
+    session.files.remove(&file_path);
+
+    // Si c'est un répertoire, supprimer aussi tous les fichiers qu'il contient du cache
+    if is_directory {
+        let prefix = if file_path == "/" {
+            "/".to_string()
+        } else {
+            format!("{}/", file_path)
+        };
+
+        session
+            .files
+            .retain(|path, _| !path.starts_with(&prefix) || path == &file_path);
+    }
+
+    println!("✅ Fichier supprimé avec succès");
+    Ok(())
 }
 
 #[tauri::command]
