@@ -1,0 +1,64 @@
+[package]
+name = "deepvault"
+version = "0.1.0"
+edition = "2021"
+authors = ["DeepVault Team"]
+description = "Secure USB encryption tool with cross-platform support"
+license = "MIT"
+repository = "https://github.com/deepvault/usb-deepvault"
+
+[lib]
+name = "deepvault_core"
+path = "src/lib.rs"
+
+[[bin]]
+name = "deepvault-cli"
+path = "src/bin/cli.rs"
+
+[[bin]]
+name = "deepvault-gui"
+path = "src/bin/gui.rs"
+
+[dependencies]
+# Core dependencies
+tokio = { version = "1.0", features = ["full"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+anyhow = "1.0"
+thiserror = "1.0"
+clap = { version = "4.0", features = ["derive"] }
+log = "0.4"
+env_logger = "0.10"
+
+# Cryptography
+argon2 = "0.5"
+aes-gcm = "0.10"
+rand = "0.8"
+sha2 = "0.10"
+hex = "0.4"
+base64 = "0.21"
+chrono = { version = "0.4", features = ["serde"] }
+
+# System operations
+sysinfo = "0.29"
+dirs = "5.0"
+
+# Cross-platform system calls
+[target.'cfg(unix)'.dependencies]
+nix = "0.27"
+
+[target.'cfg(windows)'.dependencies]
+winapi = { version = "0.3", features = ["winuser", "processthreadsapi", "handleapi", "fileapi", "winnt", "ioapiset"] }
+windows = { version = "0.52", features = ["Win32_Storage_FileSystem", "Win32_System_SystemServices", "Win32_System_Threading"] }
+
+# GUI dependencies (Tauri)
+[target.'cfg(feature = "gui")'.dependencies]
+tauri = { version = "1.0", features = ["api-all"], optional = true }
+
+[features]
+default = ["cli"]
+cli = []
+gui = ["tauri"]
+
+[dev-dependencies]
+tempfile = "3.0"

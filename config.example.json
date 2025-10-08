@@ -1,0 +1,24 @@
+{
+  "security": {
+    "default_algorithm": "Argon2id",
+    "default_kdf_params": {
+      "memory": 65536,
+      "iterations": 3,
+      "parallelism": 1
+    },
+    "enable_hidden_volumes": true,
+    "auto_unmount_timeout": 300,
+    "secure_wipe_passes": 3
+  },
+  "ui": {
+    "theme": "dark",
+    "language": "fr",
+    "show_advanced_options": false,
+    "confirm_destructive_actions": true
+  },
+  "paths": {
+    "config_dir": "./config",
+    "log_dir": "./logs",
+    "temp_dir": "./temp"
+  }
+}
