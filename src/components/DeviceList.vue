@@ -379,38 +379,28 @@ export default {
       }
 
       try {
-        console.log("Tentative de montage de la partition chiffrée...");
-        const result = await invoke("mount_encrypted_partition", {
+        console.log("Tentative d'accès direct à la partition chiffrée...");
+        const sessionId = await invoke("access_encrypted_partition", {
           password: password,
         });
 
-        console.log("Chemin de montage:", result);
-        window.alert(`Partition chiffrée montée avec succès sur ${result} !`);
+        console.log("Session d'accès créée:", sessionId);
+        window.alert(`Accès à la partition chiffrée configuré avec succès !`);
 
-        // Ouvrir l'explorateur Windows directement sur la partition montée
-        try {
-          // Utiliser l'API Windows pour ouvrir l'explorateur
-          await invoke("open_explorer", { path: result });
-          console.log("Explorateur ouvert sur:", result);
-        } catch (explorerError) {
-          console.warn(
-            "Impossible d'ouvrir l'explorateur automatiquement:",
-            explorerError
-          );
-          // Fallback: essayer d'ouvrir via l'URL
-          window.open(`file:///${result}`, "_blank");
-        }
-
-        // Émettre l'événement pour l'interface
+        // Émettre l'événement pour l'interface avec l'ID de session
         emit("open-partition", {
           device: selectedDevice.value,
-          partition: { name: "Partition chiffrée", path: result },
+          partition: { 
+            name: "Partition chiffrée", 
+            sessionId: sessionId,
+            type: "encrypted_direct"
+          },
           type: "encrypted",
         });
       } catch (error) {
-        console.error("Erreur lors du montage:", error);
+        console.error("Erreur lors de l'accès:", error);
         window.alert(
-          `Erreur lors du montage de la partition chiffrée : ${error}`
+          `Erreur lors de l'accès à la partition chiffrée : ${error}`
         );
       }
     };
