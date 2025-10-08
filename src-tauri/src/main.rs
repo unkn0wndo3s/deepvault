@@ -1,7 +1,33 @@
 //! DeepVault GUI - Tauri application
 
 use deepvault_core::*;
+use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::path::PathBuf;
+use std::sync::Mutex;
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct EncryptedFile {
+    name: String,
+    path: String,
+    is_directory: bool,
+    size: u64,
+    modified: i64,
+    content: Option<Vec<u8>>,
+}
+
+#[derive(Debug, Clone)]
+struct EncryptedSession {
+    session_id: String,
+    disk_num: u32,
+    partition_num: u32,
+    files: HashMap<String, EncryptedFile>,
+}
+
+// Stockage global des sessions chiffrées
+lazy_static::lazy_static! {
+    static ref ENCRYPTED_SESSIONS: Mutex<HashMap<String, EncryptedSession>> = Mutex::new(HashMap::new());
+}
 
 #[tauri::command]
 async fn get_usb_devices() -> std::result::Result<Vec<UsbDevice>, String> {
@@ -761,9 +787,67 @@ async fn access_encrypted_partition(password: String) -> std::result::Result<Str
             .as_secs()
     );
 
-    // Stocker les informations de la partition pour l'accès direct
-    // (Dans une vraie implémentation, on utiliserait une base de données ou un cache)
-    let partition_info = format!("{}:{}:{}", disk_num, partition_num, session_id);
+    // Créer une nouvelle session chiffrée avec des fichiers de démonstration
+    let mut session = EncryptedSession {
+        session_id: session_id.clone(),
+        disk_num,
+        partition_num,
+        files: HashMap::new(),
+    };
+
+    // Ajouter des fichiers de démonstration
+    session.files.insert(
+        "/Documents".to_string(),
+        EncryptedFile {
+            name: "Documents".to_string(),
+            path: "/Documents".to_string(),
+            is_directory: true,
+            size: 0,
+            modified: std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_secs() as i64,
+            content: None,
+        },
+    );
+
+    session.files.insert(
+        "/Images".to_string(),
+        EncryptedFile {
+            name: "Images".to_string(),
+            path: "/Images".to_string(),
+            is_directory: true,
+            size: 0,
+            modified: std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_secs() as i64,
+            content: None,
+        },
+    );
+
+    session.files.insert(
+        "/secret.txt".to_string(),
+        EncryptedFile {
+            name: "secret.txt".to_string(),
+            path: "/secret.txt".to_string(),
+            is_directory: false,
+            size: 1024,
+            modified: std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_secs() as i64,
+            content: Some(
+                b"Ceci est un fichier secret chiffre !\nContenu tres sensible...".to_vec(),
+            ),
+        },
+    );
+
+    // Stocker la session
+    {
+        let mut sessions = ENCRYPTED_SESSIONS.lock().unwrap();
+        sessions.insert(session_id.clone(), session);
+    }
 
     println!("✅ Accès direct configuré !");
     println!("🎉 Partition chiffrée accessible via l'application (reste cachée)");
@@ -778,8 +862,11 @@ async fn close_encrypted_session(session_id: String) -> std::result::Result<Stri
     println!("=== FERMETURE DE LA SESSION CHIFFRÉE ===");
     println!("Fermeture de la session: {}", session_id);
 
-    // Dans une vraie implémentation, on nettoierait ici les données de session
-    // et on fermerait les connexions à la partition chiffrée
+    // Supprimer la session du stockage global
+    {
+        let mut sessions = ENCRYPTED_SESSIONS.lock().unwrap();
+        sessions.remove(&session_id);
+    }
 
     println!("✅ Session fermée avec succès !");
     println!("=== SESSION FERMÉE AVEC SUCCÈS ===");
@@ -795,65 +882,28 @@ async fn list_encrypted_files(
     println!("=== LISTE DES FICHIERS CHIFFRÉS ===");
     println!("Session: {}, Chemin: {}", session_id, path);
 
-    // Pour l'instant, simuler des fichiers chiffrés
-    // Dans une vraie implémentation, on déchiffrerait les métadonnées de la partition
+    // Récupérer la session
+    let sessions = ENCRYPTED_SESSIONS.lock().unwrap();
+    let session = sessions.get(&session_id).ok_or("Session non trouvée")?;
+
     let mut files = Vec::new();
 
-    if path == "/" {
-        // Fichiers racine
-        files.push(serde_json::json!({
-            "name": "Documents",
-            "path": "/Documents",
-            "is_directory": true,
-            "size": 0,
-            "modified": std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs() as i64
-        }));
-        files.push(serde_json::json!({
-            "name": "Images",
-            "path": "/Images",
-            "is_directory": true,
-            "size": 0,
-            "modified": std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs() as i64
-        }));
-        files.push(serde_json::json!({
-            "name": "secret.txt",
-            "path": "/secret.txt",
-            "is_directory": false,
-            "size": 1024,
-            "modified": std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs() as i64
-        }));
-    } else if path == "/Documents" {
-        // Fichiers dans Documents
-        files.push(serde_json::json!({
-            "name": "rapport.pdf",
-            "path": "/Documents/rapport.pdf",
-            "is_directory": false,
-            "size": 2048000,
-            "modified": std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs() as i64
-        }));
-        files.push(serde_json::json!({
-            "name": "notes.txt",
-            "path": "/Documents/notes.txt",
-            "is_directory": false,
-            "size": 512,
-            "modified": std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs() as i64
-        }));
-    } else if path == "/Images" {
-        // Fichiers dans Images
-        files.push(serde_json::json!({
-            "name": "photo1.jpg",
-            "path": "/Images/photo1.jpg",
-            "is_directory": false,
-            "size": 1024000,
-            "modified": std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs() as i64
-        }));
-        files.push(serde_json::json!({
-            "name": "photo2.png",
-            "path": "/Images/photo2.png",
-            "is_directory": false,
-            "size": 512000,
-            "modified": std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs() as i64
-        }));
+    // Lister les fichiers dans le chemin demandé
+    for (file_path, file) in &session.files {
+        // Vérifier si le fichier est dans le bon répertoire
+        if file_path == &path
+            || (path != "/"
+                && file_path.starts_with(&format!("{}/", path))
+                && !file_path[path.len() + 1..].contains('/'))
+        {
+            files.push(serde_json::json!({
+                "name": file.name,
+                "path": file.path,
+                "is_directory": file.is_directory,
+                "size": file.size,
+                "modified": file.modified
+            }));
+        }
     }
 
     println!("✅ {} fichiers trouvés", files.len());
@@ -868,11 +918,19 @@ async fn read_encrypted_file(
     println!("=== LECTURE DE FICHIER CHIFFRÉ ===");
     println!("Session: {}, Fichier: {}", session_id, file_path);
 
-    // Pour l'instant, simuler le contenu d'un fichier chiffré
-    let content = match file_path.as_str() {
-        "/secret.txt" => "Ceci est un fichier secret chiffré !\nContenu très sensible...",
-        "/Documents/notes.txt" => "Notes personnelles:\n- Point important 1\n- Point important 2",
-        _ => "Contenu du fichier chiffré (simulé)",
+    // Récupérer la session et le fichier
+    let sessions = ENCRYPTED_SESSIONS.lock().unwrap();
+    let session = sessions.get(&session_id).ok_or("Session non trouvée")?;
+
+    let file = session.files.get(&file_path).ok_or("Fichier non trouvé")?;
+
+    if file.is_directory {
+        return Err("Impossible de lire un répertoire".to_string());
+    }
+
+    let content = match &file.content {
+        Some(data) => String::from_utf8_lossy(data).to_string(),
+        None => "Contenu vide".to_string(),
     };
 
     println!("✅ Fichier lu avec succès");
@@ -893,8 +951,30 @@ async fn write_encrypted_file(
         content.len()
     );
 
-    // Dans une vraie implémentation, on chiffrerait le contenu et on l'écrirait dans la partition
-    println!("✅ Fichier écrit avec succès");
+    // Récupérer la session et mettre à jour le fichier
+    let mut sessions = ENCRYPTED_SESSIONS.lock().unwrap();
+    let session = sessions.get_mut(&session_id).ok_or("Session non trouvée")?;
+
+    let content_bytes = content.as_bytes().to_vec();
+    let file_size = content_bytes.len() as u64;
+
+    // Mettre à jour ou créer le fichier
+    session.files.insert(
+        file_path.clone(),
+        EncryptedFile {
+            name: file_path.split('/').last().unwrap_or("").to_string(),
+            path: file_path.clone(),
+            is_directory: false,
+            size: file_size,
+            modified: std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_secs() as i64,
+            content: Some(content_bytes),
+        },
+    );
+
+    println!("✅ Fichier écrit avec succès ({} octets)", file_size);
     Ok(())
 }
 
@@ -906,9 +986,30 @@ async fn delete_encrypted_file(
     println!("=== SUPPRESSION DE FICHIER CHIFFRÉ ===");
     println!("Session: {}, Fichier: {}", session_id, file_path);
 
-    // Dans une vraie implémentation, on supprimerait le fichier de la partition chiffrée
-    println!("✅ Fichier supprimé avec succès");
-    Ok(())
+    // Récupérer la session et supprimer le fichier
+    let mut sessions = ENCRYPTED_SESSIONS.lock().unwrap();
+    let session = sessions.get_mut(&session_id).ok_or("Session non trouvée")?;
+
+    // Supprimer le fichier ou le répertoire
+    if session.files.remove(&file_path).is_some() {
+        // Si c'est un répertoire, supprimer aussi tous les fichiers qu'il contient
+        if file_path.ends_with('/') || !file_path.contains('/') {
+            let prefix = if file_path == "/" {
+                "/".to_string()
+            } else {
+                format!("{}/", file_path)
+            };
+
+            session
+                .files
+                .retain(|path, _| !path.starts_with(&prefix) || path == &file_path);
+        }
+
+        println!("✅ Fichier supprimé avec succès");
+        Ok(())
+    } else {
+        Err("Fichier non trouvé".to_string())
+    }
 }
 
 #[tauri::command]
@@ -919,7 +1020,26 @@ async fn create_encrypted_directory(
     println!("=== CRÉATION DE DOSSIER CHIFFRÉ ===");
     println!("Session: {}, Dossier: {}", session_id, dir_path);
 
-    // Dans une vraie implémentation, on créerait le dossier dans la partition chiffrée
+    // Récupérer la session et créer le répertoire
+    let mut sessions = ENCRYPTED_SESSIONS.lock().unwrap();
+    let session = sessions.get_mut(&session_id).ok_or("Session non trouvée")?;
+
+    // Créer le répertoire
+    session.files.insert(
+        dir_path.clone(),
+        EncryptedFile {
+            name: dir_path.split('/').last().unwrap_or("").to_string(),
+            path: dir_path.clone(),
+            is_directory: true,
+            size: 0,
+            modified: std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_secs() as i64,
+            content: None,
+        },
+    );
+
     println!("✅ Dossier créé avec succès");
     Ok(())
 }
@@ -938,8 +1058,29 @@ async fn upload_encrypted_file(
         content.len()
     );
 
-    // Dans une vraie implémentation, on chiffrerait le fichier et on l'écrirait dans la partition
-    println!("✅ Fichier uploadé avec succès");
+    // Récupérer la session et créer le fichier
+    let mut sessions = ENCRYPTED_SESSIONS.lock().unwrap();
+    let session = sessions.get_mut(&session_id).ok_or("Session non trouvée")?;
+
+    let file_size = content.len() as u64;
+
+    // Créer le fichier
+    session.files.insert(
+        file_path.clone(),
+        EncryptedFile {
+            name: file_path.split('/').last().unwrap_or("").to_string(),
+            path: file_path.clone(),
+            is_directory: false,
+            size: file_size,
+            modified: std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_secs() as i64,
+            content: Some(content),
+        },
+    );
+
+    println!("✅ Fichier uploadé avec succès ({} octets)", file_size);
     Ok(())
 }
 
