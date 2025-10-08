@@ -242,34 +242,14 @@ export default {
 
     async loadEncryptedFiles(sessionId, path) {
       try {
-        // Pour l'instant, simuler des fichiers chiffrés
-        // Dans une vraie implémentation, on utiliserait une API backend
-        this.files = [
-          {
-            name: "Documents",
-            path: "/Documents",
-            is_directory: true,
-            size: 0,
-            modified: new Date().toISOString(),
-          },
-          {
-            name: "Images",
-            path: "/Images",
-            is_directory: true,
-            size: 0,
-            modified: new Date().toISOString(),
-          },
-          {
-            name: "secret.txt",
-            path: "/secret.txt",
-            is_directory: false,
-            size: 1024,
-            modified: new Date().toISOString(),
-          },
-        ];
         console.log(
-          `Fichiers chiffrés chargés pour la session ${sessionId} dans ${path}`
+          `Chargement des fichiers chiffrés pour la session ${sessionId} dans ${path}`
         );
+        this.files = await invoke("list_encrypted_files", {
+          sessionId: sessionId,
+          path: path,
+        });
+        console.log(`✅ ${this.files.length} fichiers chiffrés chargés`);
       } catch (error) {
         console.error(
           "Erreur lors du chargement des fichiers chiffrés:",
@@ -316,8 +296,26 @@ export default {
     async openFile(file) {
       try {
         if (this.isTextFile(file.name)) {
-          const content = await invoke("read_file", { filePath: file.path });
-          this.fileContent = new TextDecoder("utf-8").decode(content);
+          let content;
+          if (this.partitionType === "encrypted") {
+            // Pour les fichiers chiffrés
+            const sessionId = this.extractSessionId(this.currentPath);
+            if (sessionId) {
+              content = await invoke("read_encrypted_file", {
+                sessionId: sessionId,
+                filePath: file.path,
+              });
+            } else {
+              throw new Error("Session chiffrée non trouvée");
+            }
+          } else {
+            // Pour les fichiers normaux
+            const contentBytes = await invoke("read_file", {
+              filePath: file.path,
+            });
+            content = new TextDecoder("utf-8").decode(contentBytes);
+          }
+          this.fileContent = content;
           this.editingFile = file;
           this.showEditor = true;
         } else {
@@ -327,6 +325,7 @@ export default {
         }
       } catch (error) {
         console.error("Erreur lors de l'ouverture du fichier:", error);
+        alert(`Erreur lors de l'ouverture du fichier: ${error}`);
       }
     },
 
@@ -334,15 +333,31 @@ export default {
       if (!this.editingFile) return;
 
       try {
-        const content = new TextEncoder("utf-8").encode(this.fileContent);
-        await invoke("write_file", {
-          filePath: this.editingFile.path,
-          content: Array.from(content),
-        });
+        if (this.partitionType === "encrypted") {
+          // Pour les fichiers chiffrés
+          const sessionId = this.extractSessionId(this.currentPath);
+          if (sessionId) {
+            await invoke("write_encrypted_file", {
+              sessionId: sessionId,
+              filePath: this.editingFile.path,
+              content: this.fileContent,
+            });
+          } else {
+            throw new Error("Session chiffrée non trouvée");
+          }
+        } else {
+          // Pour les fichiers normaux
+          const content = new TextEncoder("utf-8").encode(this.fileContent);
+          await invoke("write_file", {
+            filePath: this.editingFile.path,
+            content: Array.from(content),
+          });
+        }
         this.closeEditor();
         await this.refresh();
       } catch (error) {
         console.error("Erreur lors de la sauvegarde:", error);
+        alert(`Erreur lors de la sauvegarde: ${error}`);
       }
     },
 
@@ -352,10 +367,25 @@ export default {
       }
 
       try {
-        await invoke("delete_file", { filePath: file.path });
+        if (this.partitionType === "encrypted") {
+          // Pour les fichiers chiffrés
+          const sessionId = this.extractSessionId(this.currentPath);
+          if (sessionId) {
+            await invoke("delete_encrypted_file", {
+              sessionId: sessionId,
+              filePath: file.path,
+            });
+          } else {
+            throw new Error("Session chiffrée non trouvée");
+          }
+        } else {
+          // Pour les fichiers normaux
+          await invoke("delete_file", { filePath: file.path });
+        }
         await this.refresh();
       } catch (error) {
         console.error("Erreur lors de la suppression:", error);
+        alert(`Erreur lors de la suppression: ${error}`);
       }
     },
 
@@ -368,16 +398,80 @@ export default {
           ? `${this.currentPath}${name}`
           : `${this.currentPath}/${name}`;
 
-        await invoke("create_directory", { dirPath: newPath });
+        if (this.partitionType === "encrypted") {
+          // Pour les dossiers chiffrés
+          const sessionId = this.extractSessionId(this.currentPath);
+          if (sessionId) {
+            await invoke("create_encrypted_directory", {
+              sessionId: sessionId,
+              dirPath: newPath,
+            });
+          } else {
+            throw new Error("Session chiffrée non trouvée");
+          }
+        } else {
+          // Pour les dossiers normaux
+          await invoke("create_directory", { dirPath: newPath });
+        }
         await this.refresh();
       } catch (error) {
         console.error("Erreur lors de la création du dossier:", error);
+        alert(`Erreur lors de la création du dossier: ${error}`);
       }
     },
 
     async uploadFile() {
-      // TODO: Implémenter l'upload de fichiers
-      alert("Fonctionnalité d'upload à implémenter");
+      try {
+        // Créer un input file caché
+        const input = document.createElement("input");
+        input.type = "file";
+        input.multiple = false;
+
+        input.onchange = async (event) => {
+          const file = event.target.files[0];
+          if (!file) return;
+
+          const filePath = this.currentPath.endsWith("/")
+            ? `${this.currentPath}${file.name}`
+            : `${this.currentPath}/${file.name}`;
+
+          try {
+            if (this.partitionType === "encrypted") {
+              // Pour les fichiers chiffrés
+              const sessionId = this.extractSessionId(this.currentPath);
+              if (sessionId) {
+                const arrayBuffer = await file.arrayBuffer();
+                const content = new Uint8Array(arrayBuffer);
+                await invoke("upload_encrypted_file", {
+                  sessionId: sessionId,
+                  filePath: filePath,
+                  content: Array.from(content),
+                });
+              } else {
+                throw new Error("Session chiffrée non trouvée");
+              }
+            } else {
+              // Pour les fichiers normaux
+              const arrayBuffer = await file.arrayBuffer();
+              const content = new Uint8Array(arrayBuffer);
+              await invoke("write_file", {
+                filePath: filePath,
+                content: Array.from(content),
+              });
+            }
+            await this.refresh();
+            alert(`Fichier "${file.name}" uploadé avec succès !`);
+          } catch (error) {
+            console.error("Erreur lors de l'upload:", error);
+            alert(`Erreur lors de l'upload: ${error}`);
+          }
+        };
+
+        input.click();
+      } catch (error) {
+        console.error("Erreur lors de l'upload:", error);
+        alert(`Erreur lors de l'upload: ${error}`);
+      }
     },
 
     async downloadFile() {
