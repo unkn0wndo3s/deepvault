@@ -656,44 +656,83 @@ async fn access_encrypted_partition(password: String) -> std::result::Result<Str
             continue; // Ignorer les en-têtes
         }
 
-        let parts: Vec<&str> = line.split_whitespace().collect();
+        // Nettoyer la ligne et diviser par espaces multiples
+        let cleaned_line = line.trim();
+        let parts: Vec<&str> = cleaned_line.split_whitespace().collect();
+
         if parts.len() >= 4 {
             if let Ok(partition_num) = parts[0].parse::<u32>() {
                 partition_count += 1;
                 println!("  → Partition {} détectée", partition_num);
+                println!("  🔍 Tous les éléments: {:?}", parts);
 
-                if parts.len() >= 4 {
-                    let is_offset = parts[1].parse::<u64>().is_ok();
-                    let is_letter = parts[1].len() == 1
-                        && parts[1].chars().next().unwrap_or(' ').is_alphabetic();
+                // Analyser la structure: [num, drive_letter?, offset, size, type]
+                let mut drive_letter = "";
+                let mut offset = "";
+                let mut size = "";
+                let mut partition_type = "";
 
+                // Le premier élément est le numéro de partition
+                // Chercher la lettre de lecteur (optionnelle) et l'offset
+                let mut current_index = 1;
+
+                // Vérifier si le deuxième élément est une lettre de lecteur
+                if current_index < parts.len()
+                    && parts[current_index].len() == 1
+                    && parts[current_index]
+                        .chars()
+                        .next()
+                        .unwrap_or(' ')
+                        .is_alphabetic()
+                {
+                    drive_letter = parts[current_index];
+                    current_index += 1;
+                }
+
+                // L'offset devrait être le prochain élément numérique
+                if current_index < parts.len() {
+                    offset = parts[current_index];
+                    current_index += 1;
+                }
+
+                // La taille devrait être le prochain élément
+                if current_index < parts.len() {
+                    size = parts[current_index];
+                    current_index += 1;
+                }
+
+                // Le type devrait être le dernier élément
+                if current_index < parts.len() {
+                    partition_type = parts[current_index];
+                }
+
+                println!(
+                    "  🔍 Analyse partition {}: lettre='{}', offset='{}', taille='{}', type='{}'",
+                    partition_num, drive_letter, offset, size, partition_type
+                );
+
+                if drive_letter.is_empty() && !offset.is_empty() {
+                    // Cette partition n'a pas de lettre de lecteur, c'est probablement la partition chiffrée
+                    encrypted_partition = Some(partition_num);
                     println!(
-                        "  🔍 Analyse partition {}: parts[1]='{}', is_offset={}, is_letter={}",
-                        partition_num, parts[1], is_offset, is_letter
+                        "  ✅ Partition chiffrée trouvée (sans lettre de lecteur): {}",
+                        partition_num
                     );
-
-                    if is_offset && !is_letter {
-                        encrypted_partition = Some(partition_num);
-                        println!(
-                            "  ✅ Partition chiffrée trouvée (sans lettre de lecteur): {}",
-                            partition_num
-                        );
-                        println!(
-                            "  📊 Détails: Offset={}, Taille={}, Type={}",
-                            parts[1], parts[2], parts[3]
-                        );
-                        break;
-                    } else if is_letter {
-                        println!(
-                            "  ℹ️  Partition {} a une lettre de lecteur: {}",
-                            partition_num, parts[1]
-                        );
-                    } else {
-                        println!(
-                            "  ⚠️  Partition {} - format inattendu: {}",
-                            partition_num, parts[1]
-                        );
-                    }
+                    println!(
+                        "  📊 Détails: Offset={}, Taille={}, Type={}",
+                        offset, size, partition_type
+                    );
+                    break;
+                } else if !drive_letter.is_empty() {
+                    println!(
+                        "  ℹ️  Partition {} a une lettre de lecteur: {}",
+                        partition_num, drive_letter
+                    );
+                } else {
+                    println!(
+                        "  ⚠️  Partition {} - format inattendu: offset='{}'",
+                        partition_num, offset
+                    );
                 }
             }
         }
