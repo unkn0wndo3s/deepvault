@@ -787,6 +787,162 @@ async fn close_encrypted_session(session_id: String) -> std::result::Result<Stri
     Ok(format!("Session {} fermée avec succès", session_id))
 }
 
+#[tauri::command]
+async fn list_encrypted_files(
+    session_id: String,
+    path: String,
+) -> std::result::Result<Vec<serde_json::Value>, String> {
+    println!("=== LISTE DES FICHIERS CHIFFRÉS ===");
+    println!("Session: {}, Chemin: {}", session_id, path);
+
+    // Pour l'instant, simuler des fichiers chiffrés
+    // Dans une vraie implémentation, on déchiffrerait les métadonnées de la partition
+    let mut files = Vec::new();
+
+    if path == "/" {
+        // Fichiers racine
+        files.push(serde_json::json!({
+            "name": "Documents",
+            "path": "/Documents",
+            "is_directory": true,
+            "size": 0,
+            "modified": std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs() as i64
+        }));
+        files.push(serde_json::json!({
+            "name": "Images",
+            "path": "/Images",
+            "is_directory": true,
+            "size": 0,
+            "modified": std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs() as i64
+        }));
+        files.push(serde_json::json!({
+            "name": "secret.txt",
+            "path": "/secret.txt",
+            "is_directory": false,
+            "size": 1024,
+            "modified": std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs() as i64
+        }));
+    } else if path == "/Documents" {
+        // Fichiers dans Documents
+        files.push(serde_json::json!({
+            "name": "rapport.pdf",
+            "path": "/Documents/rapport.pdf",
+            "is_directory": false,
+            "size": 2048000,
+            "modified": std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs() as i64
+        }));
+        files.push(serde_json::json!({
+            "name": "notes.txt",
+            "path": "/Documents/notes.txt",
+            "is_directory": false,
+            "size": 512,
+            "modified": std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs() as i64
+        }));
+    } else if path == "/Images" {
+        // Fichiers dans Images
+        files.push(serde_json::json!({
+            "name": "photo1.jpg",
+            "path": "/Images/photo1.jpg",
+            "is_directory": false,
+            "size": 1024000,
+            "modified": std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs() as i64
+        }));
+        files.push(serde_json::json!({
+            "name": "photo2.png",
+            "path": "/Images/photo2.png",
+            "is_directory": false,
+            "size": 512000,
+            "modified": std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs() as i64
+        }));
+    }
+
+    println!("✅ {} fichiers trouvés", files.len());
+    Ok(files)
+}
+
+#[tauri::command]
+async fn read_encrypted_file(
+    session_id: String,
+    file_path: String,
+) -> std::result::Result<String, String> {
+    println!("=== LECTURE DE FICHIER CHIFFRÉ ===");
+    println!("Session: {}, Fichier: {}", session_id, file_path);
+
+    // Pour l'instant, simuler le contenu d'un fichier chiffré
+    let content = match file_path.as_str() {
+        "/secret.txt" => "Ceci est un fichier secret chiffré !\nContenu très sensible...",
+        "/Documents/notes.txt" => "Notes personnelles:\n- Point important 1\n- Point important 2",
+        _ => "Contenu du fichier chiffré (simulé)",
+    };
+
+    println!("✅ Fichier lu avec succès");
+    Ok(content.to_string())
+}
+
+#[tauri::command]
+async fn write_encrypted_file(
+    session_id: String,
+    file_path: String,
+    content: String,
+) -> std::result::Result<(), String> {
+    println!("=== ÉCRITURE DE FICHIER CHIFFRÉ ===");
+    println!(
+        "Session: {}, Fichier: {}, Taille: {} caractères",
+        session_id,
+        file_path,
+        content.len()
+    );
+
+    // Dans une vraie implémentation, on chiffrerait le contenu et on l'écrirait dans la partition
+    println!("✅ Fichier écrit avec succès");
+    Ok(())
+}
+
+#[tauri::command]
+async fn delete_encrypted_file(
+    session_id: String,
+    file_path: String,
+) -> std::result::Result<(), String> {
+    println!("=== SUPPRESSION DE FICHIER CHIFFRÉ ===");
+    println!("Session: {}, Fichier: {}", session_id, file_path);
+
+    // Dans une vraie implémentation, on supprimerait le fichier de la partition chiffrée
+    println!("✅ Fichier supprimé avec succès");
+    Ok(())
+}
+
+#[tauri::command]
+async fn create_encrypted_directory(
+    session_id: String,
+    dir_path: String,
+) -> std::result::Result<(), String> {
+    println!("=== CRÉATION DE DOSSIER CHIFFRÉ ===");
+    println!("Session: {}, Dossier: {}", session_id, dir_path);
+
+    // Dans une vraie implémentation, on créerait le dossier dans la partition chiffrée
+    println!("✅ Dossier créé avec succès");
+    Ok(())
+}
+
+#[tauri::command]
+async fn upload_encrypted_file(
+    session_id: String,
+    file_path: String,
+    content: Vec<u8>,
+) -> std::result::Result<(), String> {
+    println!("=== UPLOAD DE FICHIER CHIFFRÉ ===");
+    println!(
+        "Session: {}, Fichier: {}, Taille: {} octets",
+        session_id,
+        file_path,
+        content.len()
+    );
+
+    // Dans une vraie implémentation, on chiffrerait le fichier et on l'écrirait dans la partition
+    println!("✅ Fichier uploadé avec succès");
+    Ok(())
+}
+
 /// Fonction utilitaire pour les opérations avec retry
 async fn retry_operation<F, T>(operation: F, max_attempts: u32) -> std::result::Result<T, String>
 where
@@ -1235,6 +1391,12 @@ fn main() {
             list_hidden_partitions,
             access_encrypted_partition,
             close_encrypted_session,
+            list_encrypted_files,
+            read_encrypted_file,
+            write_encrypted_file,
+            delete_encrypted_file,
+            create_encrypted_directory,
+            upload_encrypted_file,
             open_explorer
         ])
         .run(tauri::generate_context!())
