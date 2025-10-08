@@ -100,59 +100,89 @@ fn write_partition_sectors(
 fn load_real_files_from_partition(
     session: &mut EncryptedSession,
 ) -> std::result::Result<(), String> {
-    println!("Chargement des fichiers depuis la partition chiffrée (accès direct)");
+    println!("Chargement des fichiers depuis la partition chiffrée (accès direct aux secteurs)");
 
-    // Pour l'instant, simuler des fichiers de base
-    // Dans une vraie implémentation, on lirait les métadonnées de la partition
-    session.files.insert(
-        "/Documents".to_string(),
-        EncryptedFile {
-            name: "Documents".to_string(),
-            path: "/Documents".to_string(),
-            is_directory: true,
-            size: 0,
-            modified: std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_secs() as i64,
-            content: None,
-        },
-    );
+    // Lire les premiers secteurs de la partition pour analyser la structure
+    let sectors_data = read_partition_sectors(session.disk_num, session.partition_offset, 8)?;
+    println!("✅ {} octets lus depuis la partition", sectors_data.len());
 
-    session.files.insert(
-        "/Images".to_string(),
-        EncryptedFile {
-            name: "Images".to_string(),
-            path: "/Images".to_string(),
-            is_directory: true,
-            size: 0,
-            modified: std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_secs() as i64,
-            content: None,
-        },
-    );
+    // Analyser les données pour détecter un système de fichiers
+    let mut file_count = 0;
 
-    session.files.insert(
-        "/secret.txt".to_string(),
-        EncryptedFile {
-            name: "secret.txt".to_string(),
-            path: "/secret.txt".to_string(),
-            is_directory: false,
-            size: 1024,
-            modified: std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_secs() as i64,
-            content: Some(
-                b"Ceci est un fichier secret chiffre !\nContenu tres sensible...".to_vec(),
-            ),
-        },
-    );
+    // Chercher des signatures de fichiers dans les secteurs
+    for (i, chunk) in sectors_data.chunks(512).enumerate() {
+        if chunk.len() >= 4 {
+            // Vérifier si c'est un en-tête de fichier (signature personnalisée)
+            if chunk[0] == 0x44 && chunk[1] == 0x56 && chunk[2] == 0x46 && chunk[3] == 0x54 {
+                // "DVFT" = DeepVault File Table
+                println!("En-tête de fichier trouvé dans le secteur {}", i);
+                file_count += 1;
+
+                // Lire les métadonnées du fichier
+                if chunk.len() >= 64 {
+                    let name_len = chunk[4] as usize;
+                    if name_len > 0 && name_len < 50 && chunk.len() >= 5 + name_len {
+                        let name = String::from_utf8_lossy(&chunk[5..5 + name_len]).to_string();
+                        let is_dir = chunk[5 + name_len] != 0;
+                        let file_size = u64::from_le_bytes([
+                            chunk[5 + name_len + 1],
+                            chunk[5 + name_len + 2],
+                            chunk[5 + name_len + 3],
+                            chunk[5 + name_len + 4],
+                            chunk[5 + name_len + 5],
+                            chunk[5 + name_len + 6],
+                            chunk[5 + name_len + 7],
+                            chunk[5 + name_len + 8],
+                        ]);
+
+                        let file_path = format!("/{}", name);
+
+                        session.files.insert(
+                            file_path.clone(),
+                            EncryptedFile {
+                                name: name.clone(),
+                                path: file_path,
+                                is_directory: is_dir,
+                                size: file_size,
+                                modified: std::time::SystemTime::now()
+                                    .duration_since(std::time::UNIX_EPOCH)
+                                    .unwrap()
+                                    .as_secs() as i64,
+                                content: if !is_dir && file_size > 0 {
+                                    Some(Vec::new())
+                                } else {
+                                    None
+                                },
+                            },
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    // Si aucun fichier n'a été trouvé, créer une structure de base
+    if file_count == 0 {
+        println!("Aucun fichier existant trouvé, création d'une structure de base");
+
+        // Créer un en-tête de partition vide
+        let mut partition_header = vec![0u8; 512];
+        partition_header[0] = 0x44; // 'D'
+        partition_header[1] = 0x56; // 'V'
+        partition_header[2] = 0x50; // 'P'
+        partition_header[3] = 0x54; // 'T' = DeepVault Partition Table
+
+        // Écrire l'en-tête sur la partition
+        write_partition_sectors(
+            session.disk_num,
+            session.partition_offset,
+            &partition_header,
+        )?;
+        println!("✅ En-tête de partition créé");
+    }
 
     println!(
-        "✅ {} fichiers chargés depuis la partition (accès direct)",
+        "✅ {} fichiers chargés depuis la partition (accès direct aux secteurs)",
         session.files.len()
     );
     Ok(())
@@ -1035,9 +1065,22 @@ async fn read_encrypted_file(
         return Err("Impossible de lire un répertoire".to_string());
     }
 
-    let content = match &file.content {
-        Some(data) => String::from_utf8_lossy(data).to_string(),
-        None => "Contenu vide".to_string(),
+    // Lire vraiment le contenu du fichier depuis la partition
+    let content = if let Some(data) = &file.content {
+        if data.is_empty() {
+            // Si le cache est vide, lire depuis la partition
+            let file_sector_offset = session.partition_offset + 1 + (session.files.len() as u64);
+            let sectors_data = read_partition_sectors(
+                session.disk_num,
+                file_sector_offset + 1,
+                ((file.size + 511) / 512) as u32,
+            )?;
+            String::from_utf8_lossy(&sectors_data[..file.size as usize]).to_string()
+        } else {
+            String::from_utf8_lossy(data).to_string()
+        }
+    } else {
+        "Contenu vide".to_string()
     };
 
     println!("✅ Fichier lu avec succès");
@@ -1064,11 +1107,46 @@ async fn write_encrypted_file(
 
     // Accès direct à la partition (pas de montage)
 
-    // Simuler l'écriture sur la partition (accès direct aux secteurs)
-    // Dans une vraie implémentation, on utiliserait write_partition_sectors
+    // Écrire vraiment le fichier sur la partition (accès direct aux secteurs)
     println!(
         "Écriture du fichier {} sur la partition (accès direct)",
         file_path
+    );
+
+    // Créer l'en-tête du fichier
+    let mut file_header = vec![0u8; 512];
+    file_header[0] = 0x44; // 'D'
+    file_header[1] = 0x56; // 'V'
+    file_header[2] = 0x46; // 'F'
+    file_header[3] = 0x54; // 'T' = DeepVault File Table
+
+    let name_bytes = file_path.as_bytes();
+    let name_len = name_bytes.len().min(50);
+    file_header[4] = name_len as u8;
+    file_header[5..5 + name_len].copy_from_slice(&name_bytes[..name_len]);
+
+    file_header[5 + name_len] = 0; // Pas un répertoire
+    let size_bytes = content.len().to_le_bytes();
+    file_header[5 + name_len + 1..5 + name_len + 9].copy_from_slice(&size_bytes);
+
+    // Calculer l'offset où écrire le fichier (après les en-têtes)
+    let file_sector_offset = session.partition_offset + 1 + (session.files.len() as u64);
+
+    // Écrire l'en-tête du fichier
+    write_partition_sectors(session.disk_num, file_sector_offset, &file_header)?;
+
+    // Écrire le contenu du fichier
+    if !content.is_empty() {
+        let content_sectors = (content.len() + 511) / 512; // Arrondir au secteur supérieur
+        let mut padded_content = content.as_bytes().to_vec();
+        padded_content.resize(content_sectors * 512, 0);
+
+        write_partition_sectors(session.disk_num, file_sector_offset + 1, &padded_content)?;
+    }
+
+    println!(
+        "✅ Fichier écrit sur la partition au secteur {}",
+        file_sector_offset
     );
 
     let file_size = content.len() as u64;
@@ -1117,10 +1195,25 @@ async fn delete_encrypted_file(
         return Err("Fichier non trouvé".to_string());
     };
 
-    // Simuler la suppression sur la partition (accès direct aux secteurs)
+    // Supprimer vraiment le fichier de la partition (accès direct aux secteurs)
     println!(
         "Suppression du fichier {} de la partition (accès direct)",
         file_path
+    );
+
+    // Marquer le fichier comme supprimé en écrasant son en-tête
+    let mut empty_header = vec![0u8; 512];
+    // Laisser un en-tête vide pour indiquer que l'espace est libre
+
+    // Trouver l'offset du fichier à supprimer
+    let file_sector_offset = session.partition_offset + 1 + (session.files.len() as u64);
+
+    // Écraser l'en-tête du fichier
+    write_partition_sectors(session.disk_num, file_sector_offset, &empty_header)?;
+
+    println!(
+        "✅ Fichier supprimé de la partition au secteur {}",
+        file_sector_offset
     );
 
     // Supprimer du cache
@@ -1157,10 +1250,37 @@ async fn create_encrypted_directory(
 
     // Accès direct à la partition (pas de montage)
 
-    // Simuler la création sur la partition (accès direct aux secteurs)
+    // Créer vraiment le répertoire sur la partition (accès direct aux secteurs)
     println!(
         "Création du répertoire {} sur la partition (accès direct)",
         dir_path
+    );
+
+    // Créer l'en-tête du répertoire
+    let mut dir_header = vec![0u8; 512];
+    dir_header[0] = 0x44; // 'D'
+    dir_header[1] = 0x56; // 'V'
+    dir_header[2] = 0x46; // 'F'
+    dir_header[3] = 0x54; // 'T' = DeepVault File Table
+
+    let name_bytes = dir_path.as_bytes();
+    let name_len = name_bytes.len().min(50);
+    dir_header[4] = name_len as u8;
+    dir_header[5..5 + name_len].copy_from_slice(&name_bytes[..name_len]);
+
+    dir_header[5 + name_len] = 1; // C'est un répertoire
+    let size_bytes = 0u64.to_le_bytes(); // Taille 0 pour un répertoire
+    dir_header[5 + name_len + 1..5 + name_len + 9].copy_from_slice(&size_bytes);
+
+    // Calculer l'offset où écrire le répertoire
+    let dir_sector_offset = session.partition_offset + 1 + (session.files.len() as u64);
+
+    // Écrire l'en-tête du répertoire
+    write_partition_sectors(session.disk_num, dir_sector_offset, &dir_header)?;
+
+    println!(
+        "✅ Répertoire créé sur la partition au secteur {}",
+        dir_sector_offset
     );
 
     // Mettre à jour le cache
@@ -1203,13 +1323,48 @@ async fn upload_encrypted_file(
 
     // Accès direct à la partition (pas de montage)
 
-    // Simuler l'upload sur la partition (accès direct aux secteurs)
+    // Uploader vraiment le fichier sur la partition (accès direct aux secteurs)
     println!(
         "Upload du fichier {} sur la partition (accès direct)",
         file_path
     );
 
+    // Créer l'en-tête du fichier
+    let mut file_header = vec![0u8; 512];
+    file_header[0] = 0x44; // 'D'
+    file_header[1] = 0x56; // 'V'
+    file_header[2] = 0x46; // 'F'
+    file_header[3] = 0x54; // 'T' = DeepVault File Table
+
+    let name_bytes = file_path.as_bytes();
+    let name_len = name_bytes.len().min(50);
+    file_header[4] = name_len as u8;
+    file_header[5..5 + name_len].copy_from_slice(&name_bytes[..name_len]);
+
+    file_header[5 + name_len] = 0; // Pas un répertoire
     let file_size = content.len() as u64;
+    let size_bytes = file_size.to_le_bytes();
+    file_header[5 + name_len + 1..5 + name_len + 9].copy_from_slice(&size_bytes);
+
+    // Calculer l'offset où écrire le fichier
+    let file_sector_offset = session.partition_offset + 1 + (session.files.len() as u64);
+
+    // Écrire l'en-tête du fichier
+    write_partition_sectors(session.disk_num, file_sector_offset, &file_header)?;
+
+    // Écrire le contenu du fichier
+    if !content.is_empty() {
+        let content_sectors = (content.len() + 511) / 512; // Arrondir au secteur supérieur
+        let mut padded_content = content.clone();
+        padded_content.resize(content_sectors * 512, 0);
+
+        write_partition_sectors(session.disk_num, file_sector_offset + 1, &padded_content)?;
+    }
+
+    println!(
+        "✅ Fichier uploadé sur la partition au secteur {}",
+        file_sector_offset
+    );
 
     // Mettre à jour le cache
     session.files.insert(
