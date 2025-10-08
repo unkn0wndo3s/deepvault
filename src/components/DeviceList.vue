@@ -390,10 +390,10 @@ export default {
         // Émettre l'événement pour l'interface avec l'ID de session
         emit("open-partition", {
           device: selectedDevice.value,
-          partition: { 
-            name: "Partition chiffrée", 
+          partition: {
+            name: "Partition chiffrée",
             sessionId: sessionId,
-            type: "encrypted_direct"
+            type: "encrypted_direct",
           },
           type: "encrypted",
         });

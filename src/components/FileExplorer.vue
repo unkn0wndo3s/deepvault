@@ -157,17 +157,27 @@ export default {
   async mounted() {
     if (this.partitionInfo) {
       this.partitionType = this.partitionInfo.type;
-      this.mountedPath =
-        this.partitionInfo.partition.mount_point ||
-        `/mnt/${this.partitionInfo.partition.name}`;
 
       if (this.partitionType === "public") {
         // Pour la partition publique, pas besoin d'authentification
+        this.mountedPath =
+          this.partitionInfo.partition.mount_point ||
+          `/mnt/${this.partitionInfo.partition.name}`;
         this.isAuthenticated = true;
         this.currentPath = this.mountedPath;
         await this.loadFiles(this.currentPath);
+      } else if (this.partitionInfo.partition.sessionId) {
+        // Pour la partition chiffrée avec accès direct, utiliser la session
+        this.mountedPath = `/encrypted/${this.partitionInfo.partition.sessionId}`;
+        this.isAuthenticated = true;
+        this.currentPath = this.mountedPath;
+        await this.loadEncryptedFiles(
+          this.partitionInfo.partition.sessionId,
+          "/"
+        );
       } else {
-        // Pour la partition chiffrée, vérifier le statut de montage
+        // Pour la partition chiffrée sans session, demander l'authentification
+        this.mountedPath = "/encrypted";
         await this.checkMountStatus();
       }
     }
@@ -186,20 +196,19 @@ export default {
           return;
         }
 
-        // Monter la partition chiffrée avec le mot de passe
-        const result = await invoke("mount_volume", {
-          devicePath: this.partitionInfo.device.device_path,
-          volumeName: this.partitionInfo.partition.name,
+        // Accéder directement à la partition chiffrée avec le mot de passe
+        const sessionId = await invoke("access_encrypted_partition", {
           password: this.password,
         });
 
-        if (result.includes("monté")) {
+        if (sessionId) {
           this.isAuthenticated = true;
           this.authError = "";
+          this.mountedPath = `/encrypted/${sessionId}`;
           this.currentPath = this.mountedPath;
-          await this.loadFiles(this.currentPath);
+          await this.loadEncryptedFiles(sessionId, "/");
         } else {
-          this.authError = "Échec du montage: " + result;
+          this.authError = "Échec de l'accès à la partition";
         }
       } catch (error) {
         this.authError = "Erreur d'authentification: " + error;
@@ -231,17 +240,77 @@ export default {
       }
     },
 
+    async loadEncryptedFiles(sessionId, path) {
+      try {
+        // Pour l'instant, simuler des fichiers chiffrés
+        // Dans une vraie implémentation, on utiliserait une API backend
+        this.files = [
+          {
+            name: "Documents",
+            path: "/Documents",
+            is_directory: true,
+            size: 0,
+            modified: new Date().toISOString(),
+          },
+          {
+            name: "Images",
+            path: "/Images",
+            is_directory: true,
+            size: 0,
+            modified: new Date().toISOString(),
+          },
+          {
+            name: "secret.txt",
+            path: "/secret.txt",
+            is_directory: false,
+            size: 1024,
+            modified: new Date().toISOString(),
+          },
+        ];
+        console.log(
+          `Fichiers chiffrés chargés pour la session ${sessionId} dans ${path}`
+        );
+      } catch (error) {
+        console.error(
+          "Erreur lors du chargement des fichiers chiffrés:",
+          error
+        );
+        this.files = [];
+      }
+    },
+
     async refresh() {
-      await this.loadFiles(this.currentPath);
+      if (this.partitionType === "public") {
+        await this.loadFiles(this.currentPath);
+      } else {
+        // Pour les partitions chiffrées, extraire l'ID de session du chemin
+        const sessionId = this.extractSessionId(this.currentPath);
+        if (sessionId) {
+          await this.loadEncryptedFiles(sessionId, this.currentPath);
+        }
+      }
     },
 
     async handleFileClick(file) {
       if (file.is_directory) {
         this.currentPath = file.path;
-        await this.loadFiles(this.currentPath);
+        if (this.partitionType === "public") {
+          await this.loadFiles(this.currentPath);
+        } else {
+          const sessionId = this.extractSessionId(this.currentPath);
+          if (sessionId) {
+            await this.loadEncryptedFiles(sessionId, this.currentPath);
+          }
+        }
       } else {
         await this.openFile(file);
       }
+    },
+
+    extractSessionId(path) {
+      // Extraire l'ID de session du chemin /encrypted/sessionId/...
+      const match = path.match(/\/encrypted\/([^\/]+)/);
+      return match ? match[1] : null;
     },
 
     async openFile(file) {
@@ -336,7 +405,15 @@ export default {
       const parentPath =
         this.currentPath.split("/").slice(0, -1).join("/") || "/";
       this.currentPath = parentPath;
-      await this.loadFiles(this.currentPath);
+
+      if (this.partitionType === "public") {
+        await this.loadFiles(this.currentPath);
+      } else {
+        const sessionId = this.extractSessionId(this.currentPath);
+        if (sessionId) {
+          await this.loadEncryptedFiles(sessionId, this.currentPath);
+        }
+      }
     },
 
     closeEditor() {
@@ -398,7 +475,21 @@ export default {
       return new Date(timestamp * 1000).toLocaleString();
     },
 
-    closeExplorer() {
+    async closeExplorer() {
+      // Si c'est une partition chiffrée avec session, la fermer
+      if (
+        this.partitionType === "encrypted" &&
+        this.partitionInfo?.partition?.sessionId
+      ) {
+        try {
+          await invoke("close_encrypted_session", {
+            sessionId: this.partitionInfo.partition.sessionId,
+          });
+          console.log("Session chiffrée fermée");
+        } catch (error) {
+          console.warn("Erreur lors de la fermeture de la session:", error);
+        }
+      }
       this.$emit("close-explorer");
     },
   },
