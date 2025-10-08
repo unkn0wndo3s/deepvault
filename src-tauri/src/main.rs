@@ -1128,67 +1128,97 @@ if (Test-Path $ScriptPath) {{
         disk_num, partition_num
     );
 
-    // Créer le script batch qui lance le VBS
+    // Créer un script batch qui lance PowerShell
     let batch_script = format!(
         r#"
 @echo off
 REM Script d'auto-masquage DeepVault
-REM Ce fichier lance le script VBS caché
+REM Lance le script PowerShell caché
 
 cd /d "%~dp0"
-if exist "~deepvault_autorun.vbs" (
-    cscript //nologo "~deepvault_autorun.vbs"
+if exist "~deepvault_autorun.ps1" (
+    echo Lancement du script d'auto-masquage...
+    powershell -ExecutionPolicy Bypass -File "~deepvault_autorun.ps1" -DiskNumber {} -PartitionNumber {}
 ) else (
     echo Script d'auto-masquage non trouve
+    pause
 )
-"#
+"#,
+        disk_num, partition_num
     );
 
-    // Créer le fichier autorun.inf
-    let autorun_content = format!(
+    // Créer un raccourci dans le dossier de démarrage
+    let startup_script = format!(
         r#"
-[autorun]
-open=~deepvault_autorun.bat
-action=DeepVault Auto-Hide
-label=DeepVault USB
-icon=~deepvault_autorun.bat
-"#
+@echo off
+REM Raccourci de démarrage DeepVault
+REM Vérifie si la clé USB est connectée et lance le script
+
+for %%d in (D: E: F: G: H: I: J: K: L: M: N: O: P: Q: R: S: T: U: V: W: X: Y: Z:) do (
+    if exist "%%d\~deepvault_autorun.ps1" (
+        echo Clé DeepVault détectée sur %%d
+        powershell -ExecutionPolicy Bypass -File "%%d\~deepvault_autorun.ps1" -DiskNumber {} -PartitionNumber {}
+        goto :end
+    )
+)
+:end
+"#,
+        disk_num, partition_num
     );
 
     // Chemins des fichiers
-    let vbs_path = format!("{}\\~deepvault_autorun.vbs", public_drive);
+    let ps_path = format!("{}\\~deepvault_autorun.ps1", public_drive);
     let batch_path = format!("{}\\~deepvault_autorun.bat", public_drive);
-    let autorun_path = format!("{}\\autorun.inf", public_drive);
+    let startup_path = format!("{}\\DeepVault_AutoHide.bat", public_drive);
 
     println!("Écriture des scripts sur la clé USB...");
-    println!("VBS: {}", vbs_path);
+    println!("PowerShell: {}", ps_path);
     println!("Batch: {}", batch_path);
-    println!("Autorun: {}", autorun_path);
+    println!("Startup: {}", startup_path);
 
     // Écrire les fichiers
-    std::fs::write(&vbs_path, vbs_script)
-        .map_err(|e| format!("Erreur lors de l'écriture du script VBS: {}", e))?;
+    std::fs::write(&ps_path, ps_script)
+        .map_err(|e| format!("Erreur lors de l'écriture du script PowerShell: {}", e))?;
 
     std::fs::write(&batch_path, batch_script)
         .map_err(|e| format!("Erreur lors de l'écriture du script batch: {}", e))?;
 
-    std::fs::write(&autorun_path, autorun_content)
-        .map_err(|e| format!("Erreur lors de l'écriture du fichier autorun: {}", e))?;
+    std::fs::write(&startup_path, startup_script)
+        .map_err(|e| format!("Erreur lors de l'écriture du script de démarrage: {}", e))?;
 
     // Rendre les fichiers cachés
     let _ = std::process::Command::new("attrib")
-        .args(&["+h", &vbs_path])
+        .args(&["+h", &ps_path])
         .output();
 
     let _ = std::process::Command::new("attrib")
         .args(&["+h", &batch_path])
         .output();
 
-    let _ = std::process::Command::new("attrib")
-        .args(&["+h", &autorun_path])
-        .output();
+    // Copier le script de démarrage dans le dossier de démarrage de l'utilisateur
+    let user_startup = format!(
+        "{}\\AppData\\Roaming\\Microsoft\\Windows\\Start Menu\\Programs\\Startup\\DeepVault_AutoHide.bat",
+        std::env::var("USERPROFILE").unwrap_or_default()
+    );
+
+    if let Err(e) = std::fs::copy(&startup_path, &user_startup) {
+        println!(
+            "⚠️  Impossible de copier dans le dossier de démarrage: {}",
+            e
+        );
+        println!(
+            "💡 Vous pouvez copier manuellement {} vers {}",
+            startup_path, user_startup
+        );
+    } else {
+        println!("✅ Script de démarrage installé: {}", user_startup);
+    }
 
     println!("✅ Scripts d'auto-masquage créés et cachés");
+    println!(
+        "📝 Log disponible sur: {}\\deepvault_autorun.log",
+        public_drive
+    );
     Ok(())
 }
 
@@ -1251,9 +1281,9 @@ async fn cleanup_autorun_scripts() -> std::result::Result<String, String> {
     let public_drive = "D:";
 
     let files_to_clean = vec![
-        format!("{}\\~deepvault_autorun.vbs", public_drive),
+        format!("{}\\~deepvault_autorun.ps1", public_drive),
         format!("{}\\~deepvault_autorun.bat", public_drive),
-        format!("{}\\autorun.inf", public_drive),
+        format!("{}\\DeepVault_AutoHide.bat", public_drive),
         format!("{}\\deepvault_autorun.log", public_drive),
     ];
 
