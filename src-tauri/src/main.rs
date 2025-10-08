@@ -1037,6 +1037,75 @@ async fn unmount_encrypted_partition() -> std::result::Result<String, String> {
     Ok(format!("Partition {} démontée avec succès", letter))
 }
 
+/// Fonction utilitaire pour les opérations avec retry
+async fn retry_operation<F, T>(operation: F, max_attempts: u32) -> std::result::Result<T, String>
+where
+    F: Fn() -> std::result::Result<T, String>,
+{
+    let mut last_error = String::new();
+
+    for attempt in 1..=max_attempts {
+        match operation() {
+            Ok(result) => return Ok(result),
+            Err(e) => {
+                last_error = e.clone();
+                if attempt < max_attempts {
+                    println!(
+                        "⚠️  Tentative {} échouée: {}. Nouvelle tentative dans 1 seconde...",
+                        attempt, e
+                    );
+                    tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
+                }
+            }
+        }
+    }
+
+    Err(format!(
+        "Échec après {} tentatives. Dernière erreur: {}",
+        max_attempts, last_error
+    ))
+}
+
+/// Trouve le lecteur USB correct
+fn find_usb_drive() -> std::result::Result<String, String> {
+    println!("Recherche du lecteur USB...");
+
+    // Utiliser PowerShell pour lister les lecteurs USB
+    let output = std::process::Command::new("powershell")
+        .args(&["-Command", "Get-WmiObject -Class Win32_LogicalDisk | Where-Object {$_.DriveType -eq 2} | Select-Object DeviceID, VolumeName | Format-Table -HideTableHeaders"])
+        .output()
+        .map_err(|e| format!("Erreur lors de l'exécution de PowerShell: {}", e))?;
+
+    if !output.status.success() {
+        return Err("Erreur lors de la recherche des lecteurs USB".to_string());
+    }
+
+    let output_str = String::from_utf8_lossy(&output.stdout);
+    println!("Lecteurs USB trouvés: {}", output_str);
+
+    // Parser les résultats
+    for line in output_str.lines() {
+        let line = line.trim();
+        if line.is_empty() || line.contains("DeviceID") || line.contains("----") {
+            continue;
+        }
+
+        let parts: Vec<&str> = line.split_whitespace().collect();
+        if parts.len() >= 1 {
+            let drive_letter = parts[0].trim();
+            if drive_letter.len() == 2 && drive_letter.ends_with(':') {
+                // Vérifier si c'est un lecteur USB (pas le lecteur système)
+                if drive_letter != "C:" {
+                    println!("✅ Lecteur USB détecté: {}", drive_letter);
+                    return Ok(drive_letter.to_string());
+                }
+            }
+        }
+    }
+
+    Err("Aucun lecteur USB trouvé".to_string())
+}
+
 /// Génère un script d'auto-masquage sur la clé USB
 async fn generate_autorun_script(
     mount_path: &str,
@@ -1045,8 +1114,9 @@ async fn generate_autorun_script(
 ) -> std::result::Result<(), String> {
     println!("Génération du script d'auto-masquage...");
 
-    // Trouver la lettre de lecteur de la partition publique (généralement D:)
-    let public_drive = "D:"; // On assume que la partition publique est sur D:
+    // Trouver automatiquement le lecteur USB
+    let public_drive = retry_operation(|| find_usb_drive(), 3).await?;
+    println!("✅ Lecteur USB sélectionné: {}", public_drive);
 
     // Créer un script PowerShell plus robuste
     let ps_script = format!(
@@ -1176,24 +1246,68 @@ for %%d in (D: E: F: G: H: I: J: K: L: M: N: O: P: Q: R: S: T: U: V: W: X: Y: Z:
     println!("Batch: {}", batch_path);
     println!("Startup: {}", startup_path);
 
-    // Écrire les fichiers
-    std::fs::write(&ps_path, ps_script)
-        .map_err(|e| format!("Erreur lors de l'écriture du script PowerShell: {}", e))?;
+    // Écrire les fichiers avec retry
+    retry_operation(
+        || {
+            std::fs::write(&ps_path, &ps_script)
+                .map_err(|e| format!("Erreur lors de l'écriture du script PowerShell: {}", e))
+        },
+        3,
+    )
+    .await?;
 
-    std::fs::write(&batch_path, batch_script)
-        .map_err(|e| format!("Erreur lors de l'écriture du script batch: {}", e))?;
+    retry_operation(
+        || {
+            std::fs::write(&batch_path, &batch_script)
+                .map_err(|e| format!("Erreur lors de l'écriture du script batch: {}", e))
+        },
+        3,
+    )
+    .await?;
 
-    std::fs::write(&startup_path, startup_script)
-        .map_err(|e| format!("Erreur lors de l'écriture du script de démarrage: {}", e))?;
+    retry_operation(
+        || {
+            std::fs::write(&startup_path, &startup_script)
+                .map_err(|e| format!("Erreur lors de l'écriture du script de démarrage: {}", e))
+        },
+        3,
+    )
+    .await?;
 
-    // Rendre les fichiers cachés
-    let _ = std::process::Command::new("attrib")
-        .args(&["+h", &ps_path])
-        .output();
+    // Rendre les fichiers cachés avec retry
+    let _ = retry_operation(
+        || {
+            let output = std::process::Command::new("attrib")
+                .args(&["+h", &ps_path])
+                .output()
+                .map_err(|e| format!("Erreur lors de l'attribut caché pour PowerShell: {}", e))?;
 
-    let _ = std::process::Command::new("attrib")
-        .args(&["+h", &batch_path])
-        .output();
+            if !output.status.success() {
+                Err("Échec de l'attribut caché pour PowerShell".to_string())
+            } else {
+                Ok(())
+            }
+        },
+        3,
+    )
+    .await;
+
+    let _ = retry_operation(
+        || {
+            let output = std::process::Command::new("attrib")
+                .args(&["+h", &batch_path])
+                .output()
+                .map_err(|e| format!("Erreur lors de l'attribut caché pour batch: {}", e))?;
+
+            if !output.status.success() {
+                Err("Échec de l'attribut caché pour batch".to_string())
+            } else {
+                Ok(())
+            }
+        },
+        3,
+    )
+    .await;
 
     // Copier le script de démarrage dans le dossier de démarrage de l'utilisateur
     let user_startup = format!(
@@ -1201,17 +1315,32 @@ for %%d in (D: E: F: G: H: I: J: K: L: M: N: O: P: Q: R: S: T: U: V: W: X: Y: Z:
         std::env::var("USERPROFILE").unwrap_or_default()
     );
 
-    if let Err(e) = std::fs::copy(&startup_path, &user_startup) {
-        println!(
-            "⚠️  Impossible de copier dans le dossier de démarrage: {}",
-            e
-        );
-        println!(
-            "💡 Vous pouvez copier manuellement {} vers {}",
-            startup_path, user_startup
-        );
-    } else {
-        println!("✅ Script de démarrage installé: {}", user_startup);
+    match retry_operation(
+        || {
+            std::fs::copy(&startup_path, &user_startup).map_err(|e| {
+                format!(
+                    "Erreur lors de la copie vers le dossier de démarrage: {}",
+                    e
+                )
+            })
+        },
+        3,
+    )
+    .await
+    {
+        Ok(_) => {
+            println!("✅ Script de démarrage installé: {}", user_startup);
+        }
+        Err(e) => {
+            println!(
+                "⚠️  Impossible de copier dans le dossier de démarrage: {}",
+                e
+            );
+            println!(
+                "💡 Vous pouvez copier manuellement {} vers {}",
+                startup_path, user_startup
+            );
+        }
     }
 
     println!("✅ Scripts d'auto-masquage créés et cachés");
