@@ -242,12 +242,18 @@ export default {
 
     async loadEncryptedFiles(sessionId, path) {
       try {
+        // Nettoyer le chemin pour enlever le préfixe /encrypted/sessionId
+        let cleanPath = path;
+        if (path.startsWith(`/encrypted/${sessionId}`)) {
+          cleanPath = path.replace(`/encrypted/${sessionId}`, '') || '/';
+        }
+        
         console.log(
-          `Chargement des fichiers chiffrés pour la session ${sessionId} dans ${path}`
+          `Chargement des fichiers chiffrés pour la session ${sessionId} dans ${cleanPath}`
         );
         this.files = await invoke("list_encrypted_files", {
           sessionId: sessionId,
-          path: path,
+          path: cleanPath,
         });
         console.log(`✅ ${this.files.length} fichiers chiffrés chargés`);
       } catch (error) {
@@ -273,12 +279,14 @@ export default {
 
     async handleFileClick(file) {
       if (file.is_directory) {
-        this.currentPath = file.path;
         if (this.partitionType === "public") {
+          this.currentPath = file.path;
           await this.loadFiles(this.currentPath);
         } else {
+          // Pour les partitions chiffrées, construire le chemin avec le préfixe
           const sessionId = this.extractSessionId(this.currentPath);
           if (sessionId) {
+            this.currentPath = `/encrypted/${sessionId}${file.path}`;
             await this.loadEncryptedFiles(sessionId, this.currentPath);
           }
         }
@@ -301,9 +309,15 @@ export default {
             // Pour les fichiers chiffrés
             const sessionId = this.extractSessionId(this.currentPath);
             if (sessionId) {
+              // Nettoyer le chemin pour enlever le préfixe /encrypted/sessionId
+              let cleanFilePath = file.path;
+              if (file.path.startsWith(`/encrypted/${sessionId}`)) {
+                cleanFilePath = file.path.replace(`/encrypted/${sessionId}`, '') || '/';
+              }
+              
               content = await invoke("read_encrypted_file", {
                 sessionId: sessionId,
-                filePath: file.path,
+                filePath: cleanFilePath,
               });
             } else {
               throw new Error("Session chiffrée non trouvée");
@@ -337,9 +351,15 @@ export default {
           // Pour les fichiers chiffrés
           const sessionId = this.extractSessionId(this.currentPath);
           if (sessionId) {
+            // Nettoyer le chemin pour enlever le préfixe /encrypted/sessionId
+            let cleanFilePath = this.editingFile.path;
+            if (this.editingFile.path.startsWith(`/encrypted/${sessionId}`)) {
+              cleanFilePath = this.editingFile.path.replace(`/encrypted/${sessionId}`, '') || '/';
+            }
+            
             await invoke("write_encrypted_file", {
               sessionId: sessionId,
-              filePath: this.editingFile.path,
+              filePath: cleanFilePath,
               content: this.fileContent,
             });
           } else {
@@ -371,9 +391,15 @@ export default {
           // Pour les fichiers chiffrés
           const sessionId = this.extractSessionId(this.currentPath);
           if (sessionId) {
+            // Nettoyer le chemin pour enlever le préfixe /encrypted/sessionId
+            let cleanFilePath = file.path;
+            if (file.path.startsWith(`/encrypted/${sessionId}`)) {
+              cleanFilePath = file.path.replace(`/encrypted/${sessionId}`, '') || '/';
+            }
+            
             await invoke("delete_encrypted_file", {
               sessionId: sessionId,
-              filePath: file.path,
+              filePath: cleanFilePath,
             });
           } else {
             throw new Error("Session chiffrée non trouvée");
@@ -402,9 +428,15 @@ export default {
           // Pour les dossiers chiffrés
           const sessionId = this.extractSessionId(this.currentPath);
           if (sessionId) {
+            // Nettoyer le chemin pour enlever le préfixe /encrypted/sessionId
+            let cleanCurrentPath = this.currentPath.replace(`/encrypted/${sessionId}`, '') || '/';
+            let cleanNewPath = cleanCurrentPath.endsWith("/")
+              ? `${cleanCurrentPath}${name}`
+              : `${cleanCurrentPath}/${name}`;
+            
             await invoke("create_encrypted_directory", {
               sessionId: sessionId,
-              dirPath: newPath,
+              dirPath: cleanNewPath,
             });
           } else {
             throw new Error("Session chiffrée non trouvée");
@@ -440,11 +472,17 @@ export default {
               // Pour les fichiers chiffrés
               const sessionId = this.extractSessionId(this.currentPath);
               if (sessionId) {
+                // Nettoyer le chemin pour enlever le préfixe /encrypted/sessionId
+                let cleanCurrentPath = this.currentPath.replace(`/encrypted/${sessionId}`, '') || '/';
+                let cleanFilePath = cleanCurrentPath.endsWith("/")
+                  ? `${cleanCurrentPath}${file.name}`
+                  : `${cleanCurrentPath}/${file.name}`;
+                
                 const arrayBuffer = await file.arrayBuffer();
                 const content = new Uint8Array(arrayBuffer);
                 await invoke("upload_encrypted_file", {
                   sessionId: sessionId,
-                  filePath: filePath,
+                  filePath: cleanFilePath,
                   content: Array.from(content),
                 });
               } else {
@@ -496,15 +534,22 @@ export default {
     async goUp() {
       if (!this.canGoUp) return;
 
-      const parentPath =
-        this.currentPath.split("/").slice(0, -1).join("/") || "/";
-      this.currentPath = parentPath;
-
       if (this.partitionType === "public") {
+        const parentPath =
+          this.currentPath.split("/").slice(0, -1).join("/") || "/";
+        this.currentPath = parentPath;
         await this.loadFiles(this.currentPath);
       } else {
         const sessionId = this.extractSessionId(this.currentPath);
         if (sessionId) {
+          // Pour les partitions chiffrées, gérer le chemin relatif
+          let relativePath = this.currentPath.replace(`/encrypted/${sessionId}`, '') || '/';
+          if (relativePath === '/') {
+            // On est déjà à la racine, ne pas remonter
+            return;
+          }
+          const parentRelativePath = relativePath.split("/").slice(0, -1).join("/") || "/";
+          this.currentPath = `/encrypted/${sessionId}${parentRelativePath}`;
           await this.loadEncryptedFiles(sessionId, this.currentPath);
         }
       }
