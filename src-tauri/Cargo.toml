@@ -1,0 +1,30 @@
+[package]
+name = "deepvault-gui"
+version = "0.1.0"
+description = "DeepVault GUI - Secure USB encryption tool"
+authors = ["DeepVault Team"]
+license = "MIT"
+repository = "https://github.com/deepvault/usb-deepvault"
+edition = "2021"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[build-dependencies]
+tauri-build = { version = "1.5", features = [] }
+
+[dependencies]
+tauri = { version = "1.6", features = [ "fs-rename-file", "shell-open", "fs-write-file", "fs-remove-file", "fs-read-dir", "fs-copy-file", "fs-create-dir", "dialog-save", "dialog-open", "fs-exists", "fs-remove-dir", "fs-read-file"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+md5 = "0.7"
+tokio = { version = "1.0", features = ["full"] }
+log = "0.4"
+env_logger = "0.10"
+
+# DeepVault core library
+deepvault = { path = "../" }
+
+[features]
+# this feature is used for production builds or when `devPath` points to the filesystem
+# DO NOT REMOVE!!
+custom-protocol = ["tauri/custom-protocol"]
