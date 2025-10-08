@@ -890,12 +890,17 @@ async fn list_encrypted_files(
 
     // Lister les fichiers dans le chemin demandé
     for (file_path, file) in &session.files {
-        // Vérifier si le fichier est dans le bon répertoire
-        if file_path == &path
-            || (path != "/"
-                && file_path.starts_with(&format!("{}/", path))
-                && !file_path[path.len() + 1..].contains('/'))
-        {
+        let should_include = if path == "/" {
+            // Pour la racine, inclure tous les fichiers qui sont directement dans la racine
+            !file_path.contains('/')
+                || (file_path.starts_with('/') && !file_path[1..].contains('/'))
+        } else {
+            // Pour les sous-répertoires, inclure les fichiers qui commencent par le chemin
+            file_path.starts_with(&format!("{}/", path))
+                && !file_path[path.len() + 1..].contains('/')
+        };
+
+        if should_include {
             files.push(serde_json::json!({
                 "name": file.name,
                 "path": file.path,
