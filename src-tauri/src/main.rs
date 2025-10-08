@@ -21,12 +21,102 @@ struct EncryptedSession {
     session_id: String,
     disk_num: u32,
     partition_num: u32,
+    mount_path: Option<String>, // Chemin de montage temporaire
     files: HashMap<String, EncryptedFile>,
 }
 
 // Stockage global des sessions chiffrées
 lazy_static::lazy_static! {
     static ref ENCRYPTED_SESSIONS: Mutex<HashMap<String, EncryptedSession>> = Mutex::new(HashMap::new());
+}
+
+/// Charge les vrais fichiers de la partition montée
+fn load_real_files_from_partition(
+    session: &mut EncryptedSession,
+    mount_path: &str,
+) -> std::result::Result<(), String> {
+    println!("Chargement des fichiers depuis: {}", mount_path);
+
+    // Vérifier que le chemin de montage existe
+    if !std::path::Path::new(mount_path).exists() {
+        return Err(format!("Le chemin de montage {} n'existe pas", mount_path));
+    }
+
+    // Parcourir récursivement la partition
+    scan_directory(session, mount_path, "/")?;
+
+    println!(
+        "✅ {} fichiers chargés depuis la partition",
+        session.files.len()
+    );
+    Ok(())
+}
+
+/// Scanne récursivement un répertoire
+fn scan_directory(
+    session: &mut EncryptedSession,
+    physical_path: &str,
+    virtual_path: &str,
+) -> std::result::Result<(), String> {
+    let entries = std::fs::read_dir(physical_path).map_err(|e| {
+        format!(
+            "Erreur lors de la lecture du répertoire {}: {}",
+            physical_path, e
+        )
+    })?;
+
+    for entry in entries {
+        let entry = entry.map_err(|e| format!("Erreur lors de la lecture de l'entrée: {}", e))?;
+        let path = entry.path();
+        let name = path.file_name().unwrap().to_string_lossy().to_string();
+
+        let virtual_file_path = if virtual_path == "/" {
+            format!("/{}", name)
+        } else {
+            format!("{}/{}", virtual_path, name)
+        };
+
+        let metadata = entry
+            .metadata()
+            .map_err(|e| format!("Erreur lors de la lecture des métadonnées: {}", e))?;
+
+        let is_directory = metadata.is_dir();
+        let size = if is_directory { 0 } else { metadata.len() };
+        let modified = metadata
+            .modified()
+            .unwrap_or(std::time::SystemTime::UNIX_EPOCH)
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs() as i64;
+
+        // Lire le contenu si c'est un fichier
+        let content = if !is_directory {
+            match std::fs::read(&path) {
+                Ok(data) => Some(data),
+                Err(_) => None, // Ignorer les erreurs de lecture
+            }
+        } else {
+            None
+        };
+
+        let encrypted_file = EncryptedFile {
+            name: name.clone(),
+            path: virtual_file_path.clone(),
+            is_directory,
+            size,
+            modified,
+            content,
+        };
+
+        session.files.insert(virtual_file_path, encrypted_file);
+
+        // Si c'est un répertoire, le scanner récursivement
+        if is_directory {
+            scan_directory(session, &path.to_string_lossy(), &virtual_file_path)?;
+        }
+    }
+
+    Ok(())
 }
 
 #[tauri::command]
@@ -787,61 +877,53 @@ async fn access_encrypted_partition(password: String) -> std::result::Result<Str
             .as_secs()
     );
 
-    // Créer une nouvelle session chiffrée avec des fichiers de démonstration
+    // Monter la partition chiffrée temporairement
+    println!("=== ÉTAPE 5: MONTAGE TEMPORAIRE DE LA PARTITION ===");
+    println!(
+        "Montage de la partition {} du disque {}...",
+        partition_num, disk_num
+    );
+
+    // Utiliser diskpart pour assigner une lettre de lecteur temporaire
+    let mount_letter = format!(
+        "{}",
+        (b'Z' - (session_id.chars().last().unwrap_or('0') as u8 - b'0')) as char
+    );
+    let mount_path = format!("{}:\\", mount_letter);
+
+    let diskpart_script = format!(
+        "select disk {}\nselect partition {}\nassign letter={}\nexit",
+        disk_num, partition_num, mount_letter
+    );
+
+    let temp_script_path = std::env::temp_dir().join("deepvault_mount.txt");
+    std::fs::write(&temp_script_path, diskpart_script)
+        .map_err(|e| format!("Erreur lors de l'écriture du script diskpart: {}", e))?;
+
+    let output = std::process::Command::new("diskpart")
+        .args(&["/s", temp_script_path.to_str().unwrap()])
+        .output()
+        .map_err(|e| format!("Erreur lors de l'exécution de diskpart: {}", e))?;
+
+    if !output.status.success() {
+        let error_msg = String::from_utf8_lossy(&output.stderr);
+        return Err(format!("Erreur diskpart lors du montage: {}", error_msg));
+    }
+
+    println!("✅ Partition montée sur: {}", mount_path);
+
+    // Créer une nouvelle session chiffrée
     let mut session = EncryptedSession {
         session_id: session_id.clone(),
         disk_num,
         partition_num,
+        mount_path: Some(mount_path.clone()),
         files: HashMap::new(),
     };
 
-    // Ajouter des fichiers de démonstration
-    session.files.insert(
-        "/Documents".to_string(),
-        EncryptedFile {
-            name: "Documents".to_string(),
-            path: "/Documents".to_string(),
-            is_directory: true,
-            size: 0,
-            modified: std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_secs() as i64,
-            content: None,
-        },
-    );
-
-    session.files.insert(
-        "/Images".to_string(),
-        EncryptedFile {
-            name: "Images".to_string(),
-            path: "/Images".to_string(),
-            is_directory: true,
-            size: 0,
-            modified: std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_secs() as i64,
-            content: None,
-        },
-    );
-
-    session.files.insert(
-        "/secret.txt".to_string(),
-        EncryptedFile {
-            name: "secret.txt".to_string(),
-            path: "/secret.txt".to_string(),
-            is_directory: false,
-            size: 1024,
-            modified: std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_secs() as i64,
-            content: Some(
-                b"Ceci est un fichier secret chiffre !\nContenu tres sensible...".to_vec(),
-            ),
-        },
-    );
+    // Charger les fichiers réels de la partition
+    println!("=== ÉTAPE 6: CHARGEMENT DES FICHIERS RÉELS ===");
+    load_real_files_from_partition(&mut session, &mount_path)?;
 
     // Stocker la session
     {
@@ -862,10 +944,43 @@ async fn close_encrypted_session(session_id: String) -> std::result::Result<Stri
     println!("=== FERMETURE DE LA SESSION CHIFFRÉE ===");
     println!("Fermeture de la session: {}", session_id);
 
-    // Supprimer la session du stockage global
+    // Démonter la partition et supprimer la session
     {
         let mut sessions = ENCRYPTED_SESSIONS.lock().unwrap();
-        sessions.remove(&session_id);
+        if let Some(session) = sessions.remove(&session_id) {
+            if let Some(mount_path) = session.mount_path {
+                println!("=== DÉMONTAGE DE LA PARTITION ===");
+                println!("Démontage de: {}", mount_path);
+
+                // Utiliser diskpart pour retirer la lettre de lecteur
+                let diskpart_script = format!(
+                    "select volume {}\nremove letter={}\nexit",
+                    mount_path.chars().next().unwrap(),
+                    mount_path.chars().next().unwrap()
+                );
+
+                let temp_script_path = std::env::temp_dir().join("deepvault_unmount.txt");
+                if let Err(e) = std::fs::write(&temp_script_path, diskpart_script) {
+                    println!("⚠️ Erreur lors de l'écriture du script de démontage: {}", e);
+                } else {
+                    let output = std::process::Command::new("diskpart")
+                        .args(&["/s", temp_script_path.to_str().unwrap()])
+                        .output();
+
+                    match output {
+                        Ok(output) => {
+                            if output.status.success() {
+                                println!("✅ Partition démontée avec succès");
+                            } else {
+                                let error_msg = String::from_utf8_lossy(&output.stderr);
+                                println!("⚠️ Erreur lors du démontage: {}", error_msg);
+                            }
+                        }
+                        Err(e) => println!("⚠️ Erreur lors de l'exécution de diskpart: {}", e),
+                    }
+                }
+            }
+        }
     }
 
     println!("✅ Session fermée avec succès !");
@@ -956,14 +1071,32 @@ async fn write_encrypted_file(
         content.len()
     );
 
-    // Récupérer la session et mettre à jour le fichier
+    // Récupérer la session et écrire le fichier sur la partition
     let mut sessions = ENCRYPTED_SESSIONS.lock().unwrap();
     let session = sessions.get_mut(&session_id).ok_or("Session non trouvée")?;
 
-    let content_bytes = content.as_bytes().to_vec();
-    let file_size = content_bytes.len() as u64;
+    let mount_path = session.mount_path.as_ref().ok_or("Partition non montée")?;
 
-    // Mettre à jour ou créer le fichier
+    // Convertir le chemin virtuel en chemin physique
+    let physical_path = if file_path == "/" {
+        mount_path.clone()
+    } else {
+        format!("{}{}", mount_path, file_path)
+    };
+
+    // Créer le répertoire parent si nécessaire
+    if let Some(parent) = std::path::Path::new(&physical_path).parent() {
+        std::fs::create_dir_all(parent)
+            .map_err(|e| format!("Erreur lors de la création du répertoire parent: {}", e))?;
+    }
+
+    // Écrire le fichier sur la partition
+    std::fs::write(&physical_path, content.as_bytes())
+        .map_err(|e| format!("Erreur lors de l'écriture du fichier: {}", e))?;
+
+    let file_size = content.len() as u64;
+
+    // Mettre à jour le cache
     session.files.insert(
         file_path.clone(),
         EncryptedFile {
@@ -975,7 +1108,7 @@ async fn write_encrypted_file(
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap()
                 .as_secs() as i64,
-            content: Some(content_bytes),
+            content: Some(content.as_bytes().to_vec()),
         },
     );
 
@@ -991,14 +1124,35 @@ async fn delete_encrypted_file(
     println!("=== SUPPRESSION DE FICHIER CHIFFRÉ ===");
     println!("Session: {}, Fichier: {}", session_id, file_path);
 
-    // Récupérer la session et supprimer le fichier
+    // Récupérer la session et supprimer le fichier de la partition
     let mut sessions = ENCRYPTED_SESSIONS.lock().unwrap();
     let session = sessions.get_mut(&session_id).ok_or("Session non trouvée")?;
 
-    // Supprimer le fichier ou le répertoire
-    if session.files.remove(&file_path).is_some() {
-        // Si c'est un répertoire, supprimer aussi tous les fichiers qu'il contient
-        if file_path.ends_with('/') || !file_path.contains('/') {
+    let mount_path = session.mount_path.as_ref().ok_or("Partition non montée")?;
+
+    // Convertir le chemin virtuel en chemin physique
+    let physical_path = if file_path == "/" {
+        mount_path.clone()
+    } else {
+        format!("{}{}", mount_path, file_path)
+    };
+
+    // Vérifier si le fichier existe dans le cache
+    if let Some(file) = session.files.get(&file_path) {
+        // Supprimer le fichier/répertoire de la partition
+        if file.is_directory {
+            std::fs::remove_dir_all(&physical_path)
+                .map_err(|e| format!("Erreur lors de la suppression du répertoire: {}", e))?;
+        } else {
+            std::fs::remove_file(&physical_path)
+                .map_err(|e| format!("Erreur lors de la suppression du fichier: {}", e))?;
+        }
+
+        // Supprimer du cache
+        session.files.remove(&file_path);
+
+        // Si c'est un répertoire, supprimer aussi tous les fichiers qu'il contient du cache
+        if file.is_directory {
             let prefix = if file_path == "/" {
                 "/".to_string()
             } else {
@@ -1025,11 +1179,24 @@ async fn create_encrypted_directory(
     println!("=== CRÉATION DE DOSSIER CHIFFRÉ ===");
     println!("Session: {}, Dossier: {}", session_id, dir_path);
 
-    // Récupérer la session et créer le répertoire
+    // Récupérer la session et créer le répertoire sur la partition
     let mut sessions = ENCRYPTED_SESSIONS.lock().unwrap();
     let session = sessions.get_mut(&session_id).ok_or("Session non trouvée")?;
 
-    // Créer le répertoire
+    let mount_path = session.mount_path.as_ref().ok_or("Partition non montée")?;
+
+    // Convertir le chemin virtuel en chemin physique
+    let physical_path = if dir_path == "/" {
+        mount_path.clone()
+    } else {
+        format!("{}{}", mount_path, dir_path)
+    };
+
+    // Créer le répertoire sur la partition
+    std::fs::create_dir_all(&physical_path)
+        .map_err(|e| format!("Erreur lors de la création du répertoire: {}", e))?;
+
+    // Mettre à jour le cache
     session.files.insert(
         dir_path.clone(),
         EncryptedFile {
@@ -1063,13 +1230,32 @@ async fn upload_encrypted_file(
         content.len()
     );
 
-    // Récupérer la session et créer le fichier
+    // Récupérer la session et uploader le fichier sur la partition
     let mut sessions = ENCRYPTED_SESSIONS.lock().unwrap();
     let session = sessions.get_mut(&session_id).ok_or("Session non trouvée")?;
 
+    let mount_path = session.mount_path.as_ref().ok_or("Partition non montée")?;
+
+    // Convertir le chemin virtuel en chemin physique
+    let physical_path = if file_path == "/" {
+        mount_path.clone()
+    } else {
+        format!("{}{}", mount_path, file_path)
+    };
+
+    // Créer le répertoire parent si nécessaire
+    if let Some(parent) = std::path::Path::new(&physical_path).parent() {
+        std::fs::create_dir_all(parent)
+            .map_err(|e| format!("Erreur lors de la création du répertoire parent: {}", e))?;
+    }
+
+    // Écrire le fichier sur la partition
+    std::fs::write(&physical_path, &content)
+        .map_err(|e| format!("Erreur lors de l'écriture du fichier: {}", e))?;
+
     let file_size = content.len() as u64;
 
-    // Créer le fichier
+    // Mettre à jour le cache
     session.files.insert(
         file_path.clone(),
         EncryptedFile {
